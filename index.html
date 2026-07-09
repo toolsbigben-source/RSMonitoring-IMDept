@@ -1089,7 +1089,15 @@ async function saveEdit(){
     var desc=mainInputs[0].value.trim();
     var um=allSelects[0]?allSelects[0].value:'pcs';
     var qty=Number(mainInputs[1]?mainInputs[1].value:0);
-    var qtyServed=Number(mainInputs[2]?mainInputs[2].value:0);
+    // Compute qtyServed from sum of deliveries (more accurate than readonly field)
+    var deliveryQtys=tr.querySelectorAll('.delivery-row input[type="number"]');
+    var qtyServed=0;
+    deliveryQtys.forEach(function(dq){ qtyServed+=parseInt(dq.value)||0; });
+    qtyServed=Math.min(qtyServed,qty);
+    // Fallback to readonly field if no deliveries
+    if(qtyServed===0){
+      qtyServed=Number(mainInputs[2]?mainInputs[2].value:0);
+    }
     var st=allSelects[1]?allSelects[1].value:(qty>0&&qtyServed>=qty?'served':qtyServed>0?'partial':'pending');
     var deliveries=[];
     tr.querySelectorAll('.delivery-row').forEach(function(drow){
@@ -1874,7 +1882,7 @@ function addEditItemRow(desc,um,qty,qtyServed,itemStatus,deliveries){
   // Build deliveries HTML
   var delivHtml=deliveries.map(function(d,i){
     return '<div class="delivery-row" style="display:flex;gap:4px;align-items:center;margin-bottom:4px;">'+
-      '<input type="number" min="0" placeholder="Qty" value="'+(d.qty||'')+'" style="width:60px;padding:4px;border:1px solid #C8CCDB;border-radius:4px;font-size:12px;" title="Qty served in this delivery">'+
+      '<input type="number" min="0" placeholder="Qty" value="'+(d.qty||'')+'" style="width:60px;padding:4px;border:1px solid #C8CCDB;border-radius:4px;font-size:12px;" oninput="recomputeServed(this)" title="Qty served in this delivery">'+
       '<input type="text" placeholder="WS#" value="'+(d.wsNum||'')+'" style="width:90px;padding:4px;border:1px solid #C8CCDB;border-radius:4px;font-size:12px;" title="WS# for this delivery">'+
       '<input type="date" value="'+(d.date||'')+'" style="width:120px;padding:4px;border:1px solid #C8CCDB;border-radius:4px;font-size:12px;" title="Date served">'+
       '<button onclick="removeDelivery(this)" style="background:none;border:none;cursor:pointer;color:#C0392B;font-size:16px;padding:0 4px;" title="Remove">×</button>'+
@@ -1932,20 +1940,28 @@ function removeDelivery(btn){
 
 function recomputeServed(input){
   var tr=input.closest('tr');
+  // Sum all delivery quantities
   var deliveryQtys=tr.querySelectorAll('.delivery-row input[type="number"]');
   var totalServed=0;
   deliveryQtys.forEach(function(inp){ totalServed+=parseInt(inp.value)||0; });
-  var mainInputs=tr.querySelectorAll('td > input[type="number"]');
-  var ordered=parseInt(mainInputs[0]?mainInputs[0].value:0)||0;
-  if(mainInputs[1]) mainInputs[1].value=Math.min(totalServed,ordered);
-  if(mainInputs[2]) mainInputs[2].value=Math.max(0,ordered-Math.min(totalServed,ordered));
-  autoSetStatus(tr,Math.min(totalServed,ordered),ordered);
+  // Get ordered qty (first number input in the row = td4)
+  var orderedInput=tr.querySelector('td:nth-child(4) input[type="number"]');
+  var ordered=parseInt(orderedInput?orderedInput.value:0)||0;
+  var served=Math.min(totalServed,ordered);
+  var remaining=Math.max(0,ordered-served);
+  // Update served and remaining readonly fields
+  var servedInput=tr.querySelector('td:nth-child(5) input[type="number"]');
+  var remainInput=tr.querySelector('td:nth-child(6) input[type="number"]');
+  if(servedInput) servedInput.value=served;
+  if(remainInput) remainInput.value=remaining;
+  autoSetStatus(tr,served,ordered);
 }
 
 function autoSetStatus(tr,served,ordered){
-  var statusSel=tr.querySelector('select:last-of-type');
+  // Status select is in td7
+  var statusSel=tr.querySelector('td:nth-child(7) select');
   if(!statusSel)return;
-  if(served===0) statusSel.value='pending';
+  if(served<=0) statusSel.value='pending';
   else if(served>=ordered) statusSel.value='served';
   else statusSel.value='partial';
 }
