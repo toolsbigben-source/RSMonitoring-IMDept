@@ -1,0 +1,125 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<title>Fix Qty 1.01 → 1</title>
+<style>
+body{font-family:'Segoe UI',sans-serif;background:#0f172a;min-height:100vh;display:flex;align-items:center;justify-content:center;}
+.box{background:#fff;border-radius:16px;padding:28px;width:620px;}
+h2{font-size:18px;font-weight:700;margin-bottom:4px;}
+.sub{font-size:12px;color:#888;margin-bottom:16px;}
+#log{background:#0d1b2a;color:#7fff7f;font-family:monospace;font-size:11px;padding:12px;border-radius:8px;height:260px;overflow-y:auto;margin-bottom:12px;}
+.btn{width:100%;padding:12px;font-size:13px;font-weight:700;border:none;border-radius:8px;cursor:pointer;margin-bottom:8px;}
+.b-run{background:#2D5BE3;color:#fff;}
+.b-done{background:#0F8A5C;color:#fff;display:none;}
+.btn:disabled{background:#aaa;cursor:not-allowed;}
+.info{background:#FEF3E2;border-radius:8px;padding:10px 14px;font-size:12px;color:#B86E0A;margin-bottom:12px;}
+</style>
+</head>
+<body>
+<div class="box">
+  <h2>🔧 Fix Qty Floating Point (1.01 → 1)</h2>
+  <div class="sub">rsmonitoringimdept — fixes items with 1.01 qty due to step="0.01" browser bug</div>
+  <div class="info">
+    Finds all RS records where item qty is X.01 (e.g. 1.01, 2.01) and rounds to nearest integer or 2 decimal places.
+    Also recalculates qtyRemaining and status.
+  </div>
+  <div id="log">Click Run to start...</div>
+  <button class="btn b-run" id="btnRun" onclick="runFix()">🔍 Find & Fix All Records</button>
+  <button class="btn b-done" id="btnDone">✓ Done — Close this tab</button>
+</div>
+<script src="https://cdn.jsdelivr.net/npm/firebase@10.12.0/firebase-app-compat.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/firebase@10.12.0/firebase-firestore-compat.min.js"></script>
+<script>
+var db=null;
+function log(m,c){var el=document.getElementById('log');var d=document.createElement('div');d.style.color=c||'#7fff7f';d.textContent=m;el.appendChild(d);el.scrollTop=el.scrollHeight;}
+
+try{
+  firebase.initializeApp({
+    apiKey:"AIzaSyDKqUDMW3F4Wh2pvWMKVqYoFOA7qql7JMU",
+    authDomain:"rsmonitoringimdept.firebaseapp.com",
+    projectId:"rsmonitoringimdept",
+    storageBucket:"rsmonitoringimdept.firebasestorage.app",
+    messagingSenderId:"61863291257",
+    appId:"1:61863291257:web:b97bdf40c426b21797e7a8"
+  });
+  db=firebase.firestore();
+  log('✓ Firebase connected');
+}catch(e){log('✗ '+e.message,'#ff6b6b');}
+
+function roundQty(v){
+  // Round to 4 decimal places, then check if close to integer
+  var r = Math.round(v * 10000) / 10000;
+  var nearest = Math.round(r);
+  // If within 0.015 of an integer, snap to integer
+  if(Math.abs(r - nearest) < 0.015) return nearest;
+  // Otherwise round to 2 decimal places
+  return Math.round(r * 100) / 100;
+}
+
+function needsFix(items){
+  return items.some(function(it){
+    var q = it.qty||0;
+    var qs = it.qtyServed||0;
+    return Math.abs(q - Math.round(q)) > 0 && Math.abs(q - Math.round(q)) < 0.015 ||
+           Math.abs(qs - Math.round(qs)) > 0 && Math.abs(qs - Math.round(qs)) < 0.015;
+  });
+}
+
+async function runFix(){
+  if(!db) return;
+  document.getElementById('btnRun').disabled=true;
+  log('Scanning...','#aaaaff');
+  try{
+    var snap = await db.collection('rs_records').get();
+    log('Total records: '+snap.size);
+    var toFix = snap.docs.filter(function(d){
+      var items = d.data().items||[];
+      return needsFix(items);
+    });
+    log('Records needing fix: '+toFix.length, toFix.length>0?'#ffaa00':'#7fff7f');
+
+    if(!toFix.length){
+      log('✓ All clean!');
+      document.getElementById('btnDone').style.display='block';
+      return;
+    }
+
+    var fixed=0;
+    for(var i=0;i<toFix.length;i++){
+      var doc=toFix[i];
+      var data=doc.data();
+      var items=(data.items||[]).map(function(it){
+        var qty = roundQty(it.qty||0);
+        var qs  = roundQty(it.qtyServed||0);
+        var qr  = Math.round(Math.max(0,qty-qs)*10000)/10000;
+        var st  = qs<=0?'pending':qs>=qty?'served':'partial';
+        return Object.assign({},it,{qty:qty,qtyServed:qs,qtyRemaining:qr,status:st});
+      });
+
+      // Recompute RS status
+      var statuses = items.map(function(it){return it.status;});
+      var rsStatus = 'served';
+      if(statuses.some(function(s){return s==='pending';})) rsStatus='pending';
+      if(statuses.some(function(s){return s==='partial';})) rsStatus='partial';
+      if(statuses.every(function(s){return s==='cancelled';})) rsStatus='cancelled';
+      if(statuses.some(function(s){return s==='partial'||s==='pending';}) &&
+         statuses.some(function(s){return s==='served';})) rsStatus='partial';
+
+      await db.collection('rs_records').doc(doc.id).update({items:items,status:rsStatus});
+      fixed++;
+      if(fixed%20===0||fixed===toFix.length)
+        log('Fixed '+fixed+'/'+toFix.length,'#ffaa00');
+    }
+
+    log('');
+    log('✓ Done! Fixed '+fixed+' records.','#00ffaa');
+    document.getElementById('btnDone').style.display='block';
+  }catch(e){
+    log('✗ '+e.message,'#ff6b6b');
+    document.getElementById('btnRun').disabled=false;
+  }
+}
+</script>
+</body>
+</html>
